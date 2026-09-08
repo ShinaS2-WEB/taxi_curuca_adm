@@ -1,5 +1,30 @@
 import { test, expect } from '@playwright/test';
 const demoConfig = `export const config = { dataMode: 'demo', firebase: {} };`;
+
+test('edita passageiro, converte em motorista e reverte preservando o cadastro', async ({ page }) => {
+  await page.goto('./#passengers');
+  await page.getByRole('textbox', { name: 'Buscar registros' }).fill('Beatriz');
+  await page.getByRole('button', { name: 'Editar perfil' }).click();
+  await page.getByLabel('Nome completo').fill('Beatriz Atualizada');
+  await page.getByLabel('Cidade', { exact: true }).fill('Curuçá');
+  await page.getByLabel('Tipo de usuário').selectOption('driver');
+  await page.getByLabel('Modelo do veículo para novo motorista').fill('Fiat Uno');
+  await page.getByRole('button', { name: 'Salvar usuário' }).click();
+  await expect(page.locator('tbody')).toContainText('Motorista');
+  await page.locator('nav').getByRole('button', { name: 'Motoristas', exact: true }).click();
+  await page.getByRole('textbox', { name: 'Buscar registros' }).fill('Beatriz Atualizada');
+  await expect(page.locator('.driver-card')).toHaveCount(1);
+  await page.getByRole('button', { name: /Gerenciar/ }).click();
+  await page.getByRole('button', { name: 'Editar usuário / converter em passageiro' }).click();
+  await page.getByLabel('Tipo de usuário').selectOption('passenger');
+  await page.getByRole('button', { name: 'Salvar usuário' }).click();
+  await expect(page.locator('.driver-card')).toHaveCount(0);
+  await page.reload();
+  await page.locator('nav').getByRole('button', { name: 'Passageiros', exact: true }).click();
+  await page.getByRole('textbox', { name: 'Buscar registros' }).fill('Beatriz Atualizada');
+  await expect(page.locator('tbody')).toContainText('Passageiro');
+  await expect(page.locator('tbody')).toContainText('Curuçá');
+});
 test.beforeEach(async ({ page }) => {
   await page.route('**/config.js', route => route.fulfill({ contentType: 'text/javascript', body: demoConfig }));
   await page.route('https://fonts.googleapis.com/**', route => route.abort());
@@ -56,6 +81,23 @@ test('conteúdo de usuário é escapado e navegação móvel funciona', async ({
   await page.locator('nav').getByRole('button', { name: 'Passageiros' }).click();
   await expect(page.getByRole('heading', { name: 'Passageiros', exact: true })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+});
+
+test('recusa exige motivo, persiste e não cadastra motorista', async ({ page }) => {
+  await page.goto('./#applications');
+  await page.getByRole('button', { name: 'Analisar', exact: true }).first().click();
+  await page.getByRole('button', { name: 'Recusar cadastro' }).click();
+  await expect(page.locator('dialog [role="alert"]')).toContainText('motivo');
+  await page.getByLabel('Motivo da recusa').fill('Placa informada está incorreta');
+  await page.getByRole('button', { name: 'Recusar cadastro' }).click();
+  await expect(page.locator('tbody tr').first()).toContainText('Recusado');
+  await page.reload();
+  await page.getByRole('button', { name: 'Detalhes', exact: true }).first().click();
+  await expect(page.locator('dialog')).toContainText('Placa informada está incorreta');
+  await expect(page.getByRole('button', { name: 'Aprovar motorista' })).toHaveCount(0);
+  await page.keyboard.press('Escape');
+  await page.locator('nav').getByRole('button', { name: 'Motoristas' }).click();
+  await expect(page.locator('.driver-card')).toHaveCount(5);
 });
 test('sem configuração mostra conexão pendente, nunca dados fictícios como reais', async ({ page }) => {
   await page.route('**/config.js', route => route.fulfill({ contentType: 'text/javascript', body: "export const config = { dataMode: 'firebase', firebase: {} };" }));

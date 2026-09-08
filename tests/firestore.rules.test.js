@@ -31,6 +31,23 @@ test('anônimo e passageiro não podem consultar os dados administrativos nem se
   await assertFails(updateDoc(doc(passenger, 'driverApplications/p1'), { status: 'approved' }));
   await assertFails(getDoc(doc(passenger, 'users/d1')));
 });
+
+test('somente admin altera tipo; conversão para passageiro exige motorista offline', async () => {
+  const admin = env.authenticatedContext('admin', { admin: true }).firestore();
+  const passenger = env.authenticatedContext('p1').firestore();
+  const owner = env.authenticatedContext('d1').firestore();
+  const body = { fullName: 'Maria Costa', phone: '', city: '', birthDate: '', emergencyContact: '', driverApproved: false, updatedAt: serverTimestamp() };
+  await assertFails(updateDoc(doc(owner, 'users/d1'), body));
+  await assertFails(updateDoc(doc(passenger, 'users/p1'), { ...body, driverApproved: true }));
+  await assertFails(updateDoc(doc(passenger, 'users/d1'), body));
+  await assertFails(updateDoc(doc(admin, 'users/d1'), body));
+  const batch = writeBatch(admin);
+  batch.update(doc(admin, 'users/d1'), body);
+  batch.update(doc(admin, 'drivers/d1'), { name: 'Maria Costa', online: false, updatedAt: serverTimestamp() });
+  await assertSucceeds(batch.commit());
+  await assertFails(updateDoc(doc(owner, 'users/d1'), { driverApproved: true }));
+  await assertFails(updateDoc(doc(owner, 'drivers/d1'), { online: true }));
+});
 test('administrador consulta cadastros e mensagens, sem exclusão ou escrita de chat', async () => {
   const db = env.authenticatedContext('admin', { admin: true }).firestore();
   for (const name of ['users', 'drivers', 'driverApplications', 'trips', 'chats']) await assertSucceeds(getDocs(collection(db, name)));

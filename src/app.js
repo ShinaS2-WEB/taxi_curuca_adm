@@ -1,6 +1,6 @@
 import { config } from '../config.js';
 import { loadDemo, persistDemo, seedData, money, dateValue, dateLabel, statusLabels, nextStatuses } from './data.js';
-import { checkTransition, validateDriver, validateReview, validateAdmin, documentVersion } from './domain.js';
+import { checkTransition, validateDriver, validateReview, validateAdmin, validateUser, documentVersion } from './domain.js';
 
 const demo = config.dataMode === 'demo';
 const configured = ['apiKey', 'authDomain', 'projectId'].every(key => config.firebase[key]);
@@ -33,6 +33,7 @@ const avatar = name => `<span class="avatar small">${esc((name || '?').split(' '
 const badge = status => `<span class="badge ${Object.hasOwn(statusLabels, status) ? status : 'offline'}"><i></i>${esc(statusLabels[status] || status)}</span>`;
 const person = id => state.data.users.find(u => u.id === id)?.fullName || id || 'Não informado';
 const driver = id => state.data.drivers.find(d => d.id === id);
+const activeDrivers = () => state.data.drivers.filter(d => state.data.users.find(u => u.id === d.id)?.driverApproved !== false);
 const empty = (text = 'Nenhum registro encontrado.') => `<div class="empty">${icon('search')}<h3>${esc(text)}</h3><p>Experimente ajustar a busca ou os filtros.</p></div>`;
 const details = rows => `<dl>${rows.map(([label, value]) => `<dt>${esc(label)}</dt><dd>${esc(value ?? 'Não informado')}</dd>`).join('')}</dl>`;
 const pending = () => state.data.driverApplications.filter(a => a.status === 'pending');
@@ -79,7 +80,7 @@ function matches(...values) { const term = state.query.trim().toLocaleLowerCase(
 function filteredRecords() {
   if (state.page === 'admins') return (state.data.admins || []).filter(a => matches(a.name, a.email) && (state.filter === 'all' || a.active === (state.filter === 'active')));
   if (['overview', 'trips'].includes(state.page)) return filteredTrips();
-  if (state.page === 'drivers') return state.data.drivers.filter(d => matches(d.name, d.vehicleModel, d.origin, d.destination) && (state.filter === 'all' || (state.filter === 'online' ? d.online : state.filter === 'offline' ? !d.online : d.vehicleType === state.filter)));
+  if (state.page === 'drivers') return activeDrivers().filter(d => matches(d.name, d.vehicleModel, d.origin, d.destination) && (state.filter === 'all' || (state.filter === 'online' ? d.online : state.filter === 'offline' ? !d.online : d.vehicleType === state.filter)));
   if (state.page === 'applications') return state.data.driverApplications.filter(a => matches(person(a.userId), a.vehicleModel, a.plate) && (state.filter === 'all' || state.filter === a.status));
   if (state.page === 'passengers') return state.data.users.filter(u => matches(u.fullName, u.email, u.phone));
   return state.data.chats.filter(c => matches(c.lastMessage, ...(c.participantIds || []).map(person)));
@@ -100,7 +101,7 @@ function chart() {
 function overview() {
   const trips = filteredTrips(), completed = trips.filter(t => t.status === 'completed');
   const estimated = completed.reduce((sum, t) => sum + (driver(t.driverId)?.priceCents || 0) * (driver(t.driverId)?.serviceType === 'shared' ? t.seats : 1), 0);
-  return `<section class="metrics">${metric('Viagens no período', trips.length, `${trips.filter(t => nextStatuses[t.status]?.length).length} viagens em aberto`, 'car', 'green')}${metric('Motoristas online', state.data.drivers.filter(d => d.online).length, `${state.data.drivers.length} motoristas cadastrados`, 'user', 'blue')}${metric('Passageiros cadastrados', state.data.users.length, 'Pessoas conectadas à plataforma', 'users', 'purple')}${metric('Valor estimado de viagens', money(estimated), 'Concluídas · tarifa atual, sem repasses', 'car', 'orange')}</section><div class="dashboard-middle"><section class="panel chart-panel"><div class="panel-heading"><div><h2>O ritmo da sua operação</h2><p>Volume de viagens nos últimos 7 dias</p></div></div>${chart()}<div class="chart-footer">${completed.length} viagens concluídas no período selecionado</div></section><section class="panel approvals-panel"><div class="panel-heading"><div><h2>Novos caminhos</h2><p>Motoristas aguardando aprovação</p></div><span class="count-pill">${pending().length}</span></div>${pending().slice(0, 3).map(a => button('review', `${avatar(person(a.userId))}<span><strong>${esc(person(a.userId))}</strong><small>${esc(a.vehicleModel)}</small></span>${icon('arrow')}`, a.id, 'application-preview')).join('') || '<div class="all-clear">Nenhuma solicitação pendente.</div>'}${button('navigate', 'Ver todas as solicitações →', 'applications', 'approval-footer')}</section></div><section class="panel"><div class="panel-heading"><h2>Últimas viagens</h2>${button('navigate', 'Ver todas →', 'trips', 'text-button')}</div>${tripTable(true)}</section>`;
+  return `<section class="metrics">${metric('Viagens no período', trips.length, `${trips.filter(t => nextStatuses[t.status]?.length).length} viagens em aberto`, 'car', 'green')}${metric('Motoristas online', activeDrivers().filter(d => d.online).length, `${activeDrivers().length} motoristas cadastrados`, 'user', 'blue')}${metric('Passageiros cadastrados', state.data.users.length, 'Pessoas conectadas à plataforma', 'users', 'purple')}${metric('Valor estimado de viagens', money(estimated), 'Concluídas · tarifa atual, sem repasses', 'car', 'orange')}</section><div class="dashboard-middle"><section class="panel chart-panel"><div class="panel-heading"><div><h2>O ritmo da sua operação</h2><p>Volume de viagens nos últimos 7 dias</p></div></div>${chart()}<div class="chart-footer">${completed.length} viagens concluídas no período selecionado</div></section><section class="panel approvals-panel"><div class="panel-heading"><div><h2>Novos caminhos</h2><p>Motoristas aguardando aprovação</p></div><span class="count-pill">${pending().length}</span></div>${pending().slice(0, 3).map(a => button('review', `${avatar(person(a.userId))}<span><strong>${esc(person(a.userId))}</strong><small>${esc(a.vehicleModel)}</small></span>${icon('arrow')}`, a.id, 'application-preview')).join('') || '<div class="all-clear">Nenhuma solicitação pendente.</div>'}${button('navigate', 'Ver todas as solicitações →', 'applications', 'approval-footer')}</section></div><section class="panel"><div class="panel-heading"><h2>Últimas viagens</h2>${button('navigate', 'Ver todas →', 'trips', 'text-button')}</div>${tripTable(true)}</section>`;
 }
 function records() {
   const rows = filteredRecords();
@@ -112,7 +113,7 @@ function records() {
   if (state.page === 'trips') content = tripTable();
   if (state.page === 'drivers') content = `<div class="drivers-grid">${rows.map(d => `<article class="driver-card"><div class="driver-card-top">${avatar(d.name)}<span class="badge ${d.online ? 'approved' : 'offline'}">${d.online ? 'Online' : 'Offline'}</span></div><h3>${esc(d.name)}</h3><p>${esc(d.vehicleModel)} · ${esc(d.vehicleColor || 'Cor não informada')}</p><div class="driver-tags"><span>${d.vehicleType === 'car' ? 'Carro' : 'Moto'}</span><span>${d.serviceType === 'shared' ? 'Lotação' : 'Particular'}</span></div><div class="driver-route">${icon('pin')}<div><strong>${esc(d.origin || 'Origem não configurada')}</strong><small>${esc(d.destination || 'Destino não configurado')}</small></div></div><div class="driver-card-bottom"><span><strong>${money(d.priceCents)}</strong><small>${esc(d.seatsAvailable)}/${esc(d.seatsTotal)} vagas livres</small></span>${button('driver', 'Gerenciar →', d.id)}</div></article>`).join('') || empty()}</div>`;
   if (state.page === 'applications') content = table(['CANDIDATO', 'VEÍCULO', 'PLACA', 'RECEBIDA EM', 'STATUS', ''], rows.map(a => `<tr><td><div class="person">${avatar(person(a.userId))}<strong>${esc(person(a.userId))}</strong></div></td><td>${esc(a.vehicleModel)}</td><td><span class="plate">${esc(a.plate)}</span></td><td>${dateLabel(a.submittedAt)}</td><td>${badge(a.status)}</td><td>${button('review', a.status === 'pending' ? 'Analisar' : 'Detalhes', a.id, 'button small-button')}</td></tr>`));
-  if (state.page === 'passengers') content = table(['PASSAGEIRO', 'CONTATO', 'CIDADE', 'PERFIL', ''], rows.map(u => `<tr><td><div class="person">${avatar(u.fullName)}<strong>${esc(u.fullName)}</strong></div></td><td>${esc(u.email)}<small>${esc(u.phone)}</small></td><td>${esc(u.city || 'Não informada')}</td><td>${u.profileComplete ? 'Completo' : 'Incompleto'}</td><td>${button('passenger', 'Ver perfil', u.id, 'button small-button')}</td></tr>`));
+  if (state.page === 'passengers') content = table(['PASSAGEIRO', 'CONTATO', 'CIDADE', 'PERFIL', ''], rows.map(u => `<tr><td><div class="person">${avatar(u.fullName)}<strong>${esc(u.fullName)}</strong></div></td><td>${esc(u.email)}<small>${esc(u.phone)}</small></td><td>${esc(u.city || 'Não informada')}</td><td>${u.driverApproved ? 'Motorista' : 'Passageiro'}<small>${u.profileComplete ? 'Completo' : 'Incompleto'}</small></td><td>${button('passenger', 'Editar perfil', u.id, 'button small-button')}</td></tr>`));
   if (state.page === 'chats') content = `<div class="chat-list">${rows.map(c => button('chat', `<span class="chat-icon">${icon('chat')}</span><div><strong>${esc((c.participantIds || []).map(person).join(' e '))}</strong><p>${esc(c.lastMessage || 'Sem mensagens')}</p><small>${dateLabel(c.updatedAt)} · Viagem ${esc(c.tripId || 'não vinculada')}</small></div>${icon('arrow')}`, c.id, '')).join('') || empty('Nenhuma conversa encontrada.')}</div>`;
   return `<section class="panel records-panel">${toolbar}${content}</section>`;
 }
@@ -130,8 +131,36 @@ function openModal(titleText, content, item) {
 function closeModal() { stopMessages?.(); stopMessages = null; document.querySelector('dialog')?.remove(); modalItem = null; modalReturnFocus?.focus(); }
 const field = (label, name, value, attributes = '') => `<label>${label}<input name="${name}" value="${esc(value)}" ${attributes}></label>`;
 const select = (label, name, value, options) => `<label>${label}<select name="${name}">${options.map(([v, text]) => `<option value="${v}" ${v === value ? 'selected' : ''}>${text}</option>`).join('')}</select></label>`;
+function userModal(u) {
+  if (!u) throw new Error('Usuário não encontrado.');
+  const d = driver(u.id);
+  const a = state.data.driverApplications.find(a => a.userId === u.id);
+  openModal('Editar usuário', `<form data-form="user"><div class="form-grid">${field('Nome completo', 'fullName', u.fullName, 'required minlength="2" maxlength="120"')}${field('E-mail de acesso', 'email', u.email || '', 'readonly')}${field('Telefone', 'phone', u.phone || '', 'maxlength="40"')}${field('Cidade', 'city', u.city || '', 'maxlength="150"')}${field('Data de nascimento', 'birthDate', u.birthDate || '', 'maxlength="10"')}${field('Contato de emergência', 'emergencyContact', u.emergencyContact || '', 'maxlength="200"')}${select('Tipo de usuário', 'role', u.driverApproved ? 'driver' : 'passenger', [['passenger', 'Passageiro'], ['driver', 'Motorista']])}${field('Modelo do veículo para novo motorista', 'vehicleModel', d?.vehicleModel || a?.vehicleModel || '', 'maxlength="100"')}${select('Tipo de veículo para novo motorista', 'vehicleType', d?.vehicleType || a?.vehicleType || 'car', [['car', 'Carro'], ['motorcycle', 'Moto']])}</div><p class="settings-note">Ao converter em passageiro, o motorista fica indisponível para novas corridas. O histórico e as viagens existentes são preservados. Novos motoristas começam offline; configure trajeto e tarifa em Motoristas. Veículos já cadastrados são editados em Gerenciar motorista.</p><div class="modal-actions"><button class="button primary">Salvar usuário</button></div></form>`, u);
+}
+async function submitUser(values) {
+  const item = modalItem;
+  const input = { ...values, driverApproved: values.role === 'driver' };
+  const { profile, vehicleModel, vehicleType } = validateUser(input);
+  if (demo) {
+    const copy = structuredClone(state.data);
+    const u = copy.users.find(u => u.id === item.id);
+    const changedRole = (u.driverApproved === true) !== profile.driverApproved;
+    Object.assign(u, profile, { updatedAt: new Date().toISOString() });
+    const d = copy.drivers.find(d => d.id === item.id);
+    if (d) Object.assign(d, { name: profile.fullName, ...(!profile.driverApproved || changedRole ? { online: false } : {}) });
+    else if (profile.driverApproved) copy.drivers.push({ id: item.id, uid: item.id, name: profile.fullName, vehicleModel, vehicleType, vehicleColor: '', serviceType: 'private', origin: '', destination: '', priceCents: 0, seatsTotal: 1, seatsAvailable: 1, online: false });
+    if (changedRole) {
+      const a = copy.driverApplications.find(a => a.userId === item.id);
+      const decision = { status: profile.driverApproved ? 'approved' : 'rejected', reason: profile.driverApproved ? '' : 'Convertido em passageiro pela administração.', reviewedBy: state.user.uid, updatedAt: new Date().toISOString() };
+      if (a) Object.assign(a, decision);
+      else if (profile.driverApproved) copy.driverApplications.push({ id: item.id, userId: item.id, vehicleModel, vehicleType, plate: '', submittedAt: new Date().toISOString(), ...decision });
+    }
+    persistDemo(copy); state.data = copy; render();
+  } else await backend.saveUser(item.id, input, item.version);
+  closeModal(); toast('Usuário atualizado.');
+}
 function driverModal(d) {
-  openModal('Gerenciar motorista', `<form data-form="driver"><div class="form-grid">${field('Nome', 'name', d.name, 'required minlength="2" maxlength="120"')}${field('Veículo', 'vehicleModel', d.vehicleModel, 'required minlength="2" maxlength="100"')}${field('Cor', 'vehicleColor', d.vehicleColor || '', 'maxlength="40"')}${select('Tipo', 'vehicleType', d.vehicleType, [['car', 'Carro'], ['motorcycle', 'Moto']])}${select('Serviço', 'serviceType', d.serviceType, [['private', 'Particular'], ['shared', 'Lotação']])}${field('Origem', 'origin', d.origin, 'required minlength="2" maxlength="150"')}${field('Destino', 'destination', d.destination, 'required minlength="2" maxlength="150"')}${field('Preço (R$)', 'price', (d.priceCents / 100).toFixed(2), 'type="number" step="0.01" min="0" max="10000" required')}${field('Capacidade', 'seatsTotal', d.seatsTotal, 'type="number" min="1" max="20" required')}${field('Vagas disponíveis', 'seatsAvailable', d.seatsAvailable, 'type="number" min="0" max="20" required')}<label class="switch-label"><input name="online" type="checkbox" ${d.online ? 'checked' : ''}>Disponível no aplicativo</label></div><div class="modal-actions"><button class="button primary">Salvar alterações</button></div></form>`, d);
+  openModal('Gerenciar motorista', `<form data-form="driver"><div class="form-grid">${field('Nome', 'name', d.name, 'required minlength="2" maxlength="120"')}${field('Veículo', 'vehicleModel', d.vehicleModel, 'required minlength="2" maxlength="100"')}${field('Cor', 'vehicleColor', d.vehicleColor || '', 'maxlength="40"')}${select('Tipo', 'vehicleType', d.vehicleType, [['car', 'Carro'], ['motorcycle', 'Moto']])}${select('Serviço', 'serviceType', d.serviceType, [['private', 'Particular'], ['shared', 'Lotação']])}${field('Origem', 'origin', d.origin, 'required minlength="2" maxlength="150"')}${field('Destino', 'destination', d.destination, 'required minlength="2" maxlength="150"')}${field('Preço (R$)', 'price', (d.priceCents / 100).toFixed(2), 'type="number" step="0.01" min="0" max="10000" required')}${field('Capacidade', 'seatsTotal', d.seatsTotal, 'type="number" min="1" max="20" required')}${field('Vagas disponíveis', 'seatsAvailable', d.seatsAvailable, 'type="number" min="0" max="20" required')}<label class="switch-label"><input name="online" type="checkbox" ${d.online ? 'checked' : ''}>Disponível no aplicativo</label></div><div class="modal-actions">${button('passenger', 'Editar usuário / converter em passageiro', d.id)}<button class="button primary">Salvar alterações</button></div></form>`, d);
 }
 function adminModal(a = null) {
   const self = a?.id === state.user.uid;
@@ -229,6 +258,7 @@ document.addEventListener('submit', event => {
   const form = event.target.closest('[data-form]'); if (!form) return;
   event.preventDefault(); const values = Object.fromEntries(new FormData(form)); const type = form.dataset.form;
   if (type === 'login') return void runBusy(() => backend.login(values.email, values.password));
+  if (type === 'user') return void runBusy(() => submitUser(values));
   if (type === 'admin') return void runBusy(() => submitAdmin(values));
   if (type === 'password-reset') return void runBusy(async () => { await backend.resetPassword(values.email); closeModal(); toast('Se houver uma conta para este e-mail, você receberá as instruções de recuperação.'); });
   if (type === 'driver') return void runBusy(() => mutate('driver', { ...values, priceCents: Math.round(Number(values.price) * 100), seatsTotal: Number(values.seatsTotal), seatsAvailable: Number(values.seatsAvailable), online: values.online === 'on' }));
@@ -261,7 +291,7 @@ document.addEventListener('click', async event => {
     if (action === 'trip') tripModal(state.data.trips.find(t => t.id === id));
     if (action === 'review') reviewModal(state.data.driverApplications.find(a => a.id === id));
     if (action === 'trip-status') await runBusy(() => mutate('trip', { status: id }));
-    if (action === 'passenger') { const u = state.data.users.find(u => u.id === id); openModal('Perfil do passageiro', `<h3>${esc(u.fullName)}</h3>${details([['E-mail', u.email], ['Telefone', u.phone], ['Cidade', u.city], ['Nascimento', u.birthDate], ['Contato de emergência', u.emergencyContact], ['Motorista aprovado', u.driverApproved ? 'Sim' : 'Não']])}`, u); }
+    if (action === 'passenger') { const generation = sessionGeneration; const u = demo ? state.data.users.find(u => u.id === id) : await backend.getUser(id); if (state.user && generation === sessionGeneration) userModal(u); }
     if (action === 'chat') {
       const c = state.data.chats.find(c => c.id === id);
       openModal('Conversa da viagem', '<p class="settings-note">Consulta administrativa · últimas 100 mensagens.</p><div class="messages">Carregando mensagens…</div>', c);

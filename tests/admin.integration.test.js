@@ -5,7 +5,7 @@ import { initializeTestEnvironment } from '@firebase/rules-unit-testing';
 import { initializeApp as initializeAdminApp, deleteApp as deleteAdminApp } from 'firebase-admin/app';
 import { getAuth as getAdminAuth } from 'firebase-admin/auth';
 import { getFirestore as getAdminFirestore } from 'firebase-admin/firestore';
-import { doc, getDocFromServer, terminate } from 'firebase/firestore';
+import { doc, getDocFromServer, setDoc, serverTimestamp, terminate } from 'firebase/firestore';
 import { deleteApp } from 'firebase/app';
 import { documentVersion } from '../src/domain.js';
 
@@ -63,4 +63,65 @@ test('edição concorrente e autodesativação bloqueadas; desativação revoga 
 test('e-mail duplicado não troca a sessão nem cria permissões adicionais', async () => {
   await assert.rejects(() => backend.createAdmin({ name: 'Duplicada', email: 'new-admin@example.com', password: 'AdminSenha123', active: true }));
   assert.equal(backend.testAuth.currentUser.uid, operator.uid);
+});
+
+test('envio do APK aparece em tempo real; aprovação e recusa retornam ao candidato', async () => {
+  for (const status of ['approved', 'rejected']) {
+    const uid = `candidate-${status}`;
+    const passenger = env.authenticatedContext(uid).firestore();
+    await setDoc(doc(passenger, 'users', uid), { fullName: 'Candidato do APK' });
+    let stop;
+    const received = new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('Solicitação não chegou ao painel')), 10000);
+      stop = backend.subscribeData(data => {
+        if (data.driverApplications.some(a => a.id === uid && a.status === 'pending')) {
+          clearTimeout(timeout); resolve();
+        }
+      }, error => { clearTimeout(timeout); reject(error); });
+    });
+    try {
+      // Same fields, document ID and set operation used by FirebaseRepository.kt.
+      await setDoc(doc(passenger, 'driverApplications', uid), {
+        userId: uid, vehicleModel: 'Honda CG', vehicleType: 'motorcycle', plate: 'ABC1D23',
+        status: 'pending', submittedAt: serverTimestamp(), updatedAt: serverTimestamp()
+      });
+      await received;
+      await backend.reviewApplication(uid, { status, reason: status === 'rejected' ? 'Corrigir documentação' : '' });
+      const application = await getDocFromServer(doc(passenger, 'driverApplications', uid));
+      const profile = await getDocFromServer(doc(passenger, 'users', uid));
+      const driver = await adminDb.doc(`drivers/${uid}`).get();
+      assert.equal(application.data().status, status);
+      assert.equal(application.data().reviewedBy, operator.uid);
+      assert.equal(profile.data().driverApproved === true, status === 'approved');
+      assert.equal(driver.exists, status === 'approved');
+      if (driver.exists) assert.equal(driver.data().online, false);
+      await assert.rejects(() => backend.reviewApplication(uid, { status, reason: 'Segunda análise' }), /pendente/);
+    } finally { stop?.(); }
+  }
+});
+
+test('admin edita usuário e converte nos dois sentidos sem perder histórico ou veículo', async () => {
+  const uid = 'convert-user';
+  const passenger = env.authenticatedContext(uid).firestore();
+  await setDoc(doc(passenger, 'users', uid), { fullName: 'Nome antigo', email: 'contato@example.com' });
+  const original = await backend.getUser(uid);
+  const input = { fullName: 'Nome atualizado', phone: '91999999999', city: 'Curuçá', birthDate: '', emergencyContact: 'Maria', driverApproved: true, vehicleModel: 'Honda CG', vehicleType: 'motorcycle' };
+  await backend.saveUser(uid, input, original.version);
+  assert.equal((await backend.getUser(uid)).driverApproved, true);
+  assert.equal((await adminDb.doc(`drivers/${uid}`).get()).data().online, false);
+  assert.equal((await getDocFromServer(doc(passenger, 'driverApplications', uid))).data().status, 'approved');
+  await assert.rejects(() => backend.saveUser(uid, input, original.version), /atualizado/);
+  await adminDb.doc(`drivers/${uid}`).update({ online: true, origin: 'Centro', destination: 'Terminal', priceCents: 1500 });
+  await adminDb.doc('trips/conversion-history').set({ driverId: uid, passengerId: 'other', status: 'completed' });
+  await backend.saveUser(uid, { ...input, driverApproved: false }, (await backend.getUser(uid)).version);
+  assert.equal((await backend.getUser(uid)).driverApproved, false);
+  assert.equal((await adminDb.doc(`drivers/${uid}`).get()).data().online, false);
+  assert.equal((await getDocFromServer(doc(passenger, 'driverApplications', uid))).data().status, 'rejected');
+  await assert.rejects(() => setDoc(doc(passenger, 'drivers', uid), { online: true }, { merge: true }), /permission/i);
+  await backend.saveUser(uid, input, (await backend.getUser(uid)).version);
+  const restored = (await adminDb.doc(`drivers/${uid}`).get()).data();
+  assert.equal(restored.online, false);
+  assert.equal(restored.priceCents, 1500);
+  assert.equal((await adminDb.doc('trips/conversion-history').get()).exists, true);
+  assert.equal((await backend.getUser(uid)).email, 'contato@example.com');
 });

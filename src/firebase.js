@@ -2,7 +2,7 @@ import { initializeApp, deleteApp } from 'https://www.gstatic.com/firebasejs/12.
 import { getAuth, initializeAuth, inMemoryPersistence, createUserWithEmailAndPassword, deleteUser, sendPasswordResetEmail, onIdTokenChanged, signInWithEmailAndPassword, signOut } from 'https://www.gstatic.com/firebasejs/12.0.0/firebase-auth.js';
 import { getFirestore, collection, doc, getDocFromServer, onSnapshot, query, limit, orderBy, runTransaction, serverTimestamp } from 'https://www.gstatic.com/firebasejs/12.0.0/firebase-firestore.js';
 import { config } from '../config.js';
-import { checkTransition, validateDriver, validateReview, validateAdmin, documentVersion } from './domain.js';
+import { checkTransition, validateDriver, validateReview, validateAdmin, validateUser, documentVersion } from './domain.js';
 
 const app = initializeApp(config.firebase);
 const auth = getAuth(app);
@@ -147,6 +147,39 @@ export async function changeTripStatus(id, status) {
     checkTransition(snap.data().status, status);
     tx.update(ref, { status, updatedAt: serverTimestamp() });
     audit(tx, user, 'trip.status', id, { from: snap.data().status, status });
+  });
+}
+export async function getUser(id) {
+  await requireAdmin();
+  const snapshot = await getDocFromServer(doc(db, 'users', id));
+  if (!snapshot.exists()) throw new Error('Usuário não encontrado.');
+  return { ...snapshot.data(), id, version: documentVersion(snapshot.data()) };
+}
+export async function saveUser(id, input, version) {
+  const actor = await requireAdmin();
+  const { profile: body, vehicleModel, vehicleType } = validateUser(input);
+  await runTransaction(db, async tx => {
+    const userRef = doc(db, 'users', id);
+    const driverRef = doc(db, 'drivers', id);
+    const applicationRef = doc(db, 'driverApplications', id);
+    const profile = await tx.get(userRef);
+    const driver = await tx.get(driverRef);
+    const application = await tx.get(applicationRef);
+    if (!profile.exists()) throw new Error('Usuário não encontrado.');
+    if (documentVersion(profile.data()) !== version) throw new Error('O usuário foi atualizado. Feche e reabra o cadastro.');
+    const changedRole = (profile.data().driverApproved === true) !== body.driverApproved;
+    tx.update(userRef, { ...body, updatedAt: serverTimestamp() });
+    if (body.driverApproved && !driver.exists()) {
+      tx.set(driverRef, { uid: id, name: body.fullName, vehicleModel, vehicleType, vehicleColor: '', serviceType: 'private', origin: '', destination: '', priceCents: 0, seatsTotal: 1, seatsAvailable: 1, online: false, updatedAt: serverTimestamp() });
+    } else if (driver.exists()) {
+      tx.update(driverRef, { name: body.fullName, ...(!body.driverApproved || changedRole ? { online: false } : {}), updatedAt: serverTimestamp() });
+    }
+    if (changedRole) {
+      const decision = { status: body.driverApproved ? 'approved' : 'rejected', reason: body.driverApproved ? '' : 'Convertido em passageiro pela administração.', reviewedBy: actor.uid, updatedAt: serverTimestamp() };
+      if (application.exists()) tx.update(applicationRef, decision);
+      else if (body.driverApproved) tx.set(applicationRef, { userId: id, vehicleModel, vehicleType, plate: '', submittedAt: serverTimestamp(), ...decision });
+    }
+    audit(tx, actor, 'user.update', id, { ...body, previousDriverApproved: profile.data().driverApproved === true });
   });
 }
 export function subscribeMessages(id, callback, onError) {

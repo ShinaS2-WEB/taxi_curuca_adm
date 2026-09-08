@@ -28,6 +28,20 @@ export function validateReview(input) {
   if (!['approved', 'rejected'].includes(input.status) || reason.length > 500 || (input.status === 'rejected' && reason.length < 5)) throw new Error('Informe o motivo da recusa (5 a 500 caracteres).');
   return { status: input.status, reason };
 }
+export function validateUser(input) {
+  const body = {};
+  for (const [key, min, max] of [['fullName', 2, 120], ['phone', 0, 40], ['city', 0, 150], ['birthDate', 0, 10], ['emergencyContact', 0, 200]]) {
+    const value = String(input[key] ?? '').trim();
+    if (value.length < min || value.length > max) throw new Error('Confira o nome e os limites dos dados pessoais.');
+    body[key] = value;
+  }
+  if (typeof input.driverApproved !== 'boolean') throw new Error('Tipo de usuário inválido.');
+  body.driverApproved = input.driverApproved;
+  const vehicleModel = String(input.vehicleModel ?? '').trim();
+  const vehicleType = input.vehicleType || 'car';
+  if (body.driverApproved && (vehicleModel.length < 2 || vehicleModel.length > 100 || !['car', 'motorcycle'].includes(vehicleType))) throw new Error('Informe o modelo e o tipo do veículo para converter em motorista.');
+  return { profile: body, vehicleModel, vehicleType };
+}
 // Compare the full document, including app reservations that do not set updatedAt.
 export function documentVersion(value) {
   const canonical = v => Array.isArray(v) ? v.map(canonical) : v && typeof v === 'object' ? Object.fromEntries(Object.keys(v).sort().map(k => [k, canonical(v[k])])) : v;

@@ -10,6 +10,22 @@ service cloud.firestore {
           : request.auth.token.get('admin', false) == true);
     }
     function adminTimestamp() { return request.resource.data.updatedAt == request.time; }
+    function managedProfile(uid) {
+      return getAfter(/databases/$(database)/documents/users/$(uid)).data.updatedAt == request.time;
+    }
+    function validManagedUser(uid) {
+      let d = request.resource.data;
+      return adminTimestamp() &&
+        d.diff(resource.data).affectedKeys().hasOnly(['fullName', 'phone', 'city', 'birthDate', 'emergencyContact', 'driverApproved', 'updatedAt']) &&
+        d.fullName is string && d.fullName.size() >= 2 && d.fullName.size() <= 120 &&
+        d.phone is string && d.phone.size() <= 40 && d.city is string && d.city.size() <= 150 &&
+        d.birthDate is string && d.birthDate.size() <= 10 &&
+        d.emergencyContact is string && d.emergencyContact.size() <= 200 && d.driverApproved is bool &&
+        (d.driverApproved
+          ? getAfter(/databases/$(database)/documents/drivers/$(uid)).data.uid == uid
+          : (!exists(/databases/$(database)/documents/drivers/$(uid)) ||
+            getAfter(/databases/$(database)/documents/drivers/$(uid)).data.online == false));
+    }
     function validAdminDriver() {
       let d = request.resource.data;
       return d.name is string && d.name.size() >= 2 && d.name.size() <= 120 &&
@@ -67,6 +83,7 @@ service cloud.firestore {
 
     match /users/{uid} {
       allow read: if isAdmin();
+      allow update: if isAdmin() && validManagedUser(uid);
       allow update: if isAdmin() &&
         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['driverApproved']) &&
         request.resource.data.driverApproved == true &&
@@ -80,6 +97,12 @@ service cloud.firestore {
 
     match /driverApplications/{uid} {
       allow read: if isAdmin();
+      allow create, update: if isAdmin() && managedProfile(uid) &&
+        request.resource.data.userId == uid && adminTimestamp() &&
+        request.resource.data.reviewedBy == request.auth.uid &&
+        request.resource.data.reason is string && request.resource.data.reason.size() <= 500 &&
+        ((request.resource.data.status == 'approved' && getAfter(/databases/$(database)/documents/users/$(uid)).data.driverApproved == true) ||
+         (request.resource.data.status == 'rejected' && request.resource.data.reason.size() >= 5 && getAfter(/databases/$(database)/documents/users/$(uid)).data.driverApproved == false));
       allow update: if isAdmin() && resource.data.status == 'pending' && resource.data.userId == uid &&
         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'reason', 'reviewedBy', 'updatedAt']) &&
         request.resource.data.status in ['approved', 'rejected'] &&
@@ -95,6 +118,16 @@ service cloud.firestore {
     }
 
     match /drivers/{driverId} {
+      allow create: if isAdmin() && managedProfile(driverId) &&
+        getAfter(/databases/$(database)/documents/users/$(driverId)).data.driverApproved == true &&
+        request.resource.data.uid == driverId && request.resource.data.online == false &&
+        request.resource.data.vehicleModel is string && request.resource.data.vehicleModel.size() >= 2 && request.resource.data.vehicleModel.size() <= 100 &&
+        request.resource.data.vehicleType in ['car', 'motorcycle'] &&
+        request.resource.data.seatsTotal == 1 && request.resource.data.seatsAvailable == 1 && request.resource.data.priceCents == 0;
+      allow update: if isAdmin() && managedProfile(driverId) && adminTimestamp() &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'online', 'updatedAt']) &&
+        request.resource.data.name == getAfter(/databases/$(database)/documents/users/$(driverId)).data.fullName &&
+        (request.resource.data.online == false || getAfter(/databases/$(database)/documents/users/$(driverId)).data.driverApproved == true);
       allow create: if isAdmin() && request.resource.data.uid == driverId &&
         getAfter(/databases/$(database)/documents/users/$(driverId)).data.driverApproved == true &&
         getAfter(/databases/$(database)/documents/driverApplications/$(driverId)).data.status == 'approved' &&
@@ -179,7 +212,7 @@ service cloud.firestore {
       allow create: if isAdmin() &&
         request.resource.data.keys().hasOnly(['adminId', 'action', 'target', 'detail', 'createdAt']) &&
         request.resource.data.adminId == request.auth.uid &&
-        request.resource.data.action in ['application.review', 'driver.update', 'trip.status', 'admin.create', 'admin.update'] &&
+        request.resource.data.action in ['application.review', 'driver.update', 'trip.status', 'admin.create', 'admin.update', 'user.update'] &&
         request.resource.data.target is string && request.resource.data.detail is map &&
         request.resource.data.createdAt == request.time;
       allow update, delete: if false;
