@@ -1,0 +1,23 @@
+{
+    "name": "taxi-curuca-admin",
+    "version": "2.0.0",
+    "private": true,
+    "type": "module",
+    "scripts": {
+        "dev": "node scripts/serve.js",
+        "build": "node scripts/build.js",
+        "preview": "node scripts/serve.js dist",
+        "start": "node scripts/serve.js",
+        "admin:grant": "node --env-file=.env scripts/grant-admin.js",
+        "test": "node --test tests/domain.test.js",
+        "test:browser": "playwright test",
+        "test:rules": "firebase emulators:exec --project demo-taxi-curuca --only firestore,auth \"node --test --test-concurrency=1 tests/firestore.rules.test.js tests/admin.integration.test.js\""
+    },
+    "devDependencies": {
+        "@playwright/test": "^1.55.0",
+        "@firebase/rules-unit-testing": "^5.0.0",
+        "firebase": "^12.0.0",
+        "firebase-admin": "^13.4.0",
+        "firebase-tools": "^14.0.0"
+    }
+}

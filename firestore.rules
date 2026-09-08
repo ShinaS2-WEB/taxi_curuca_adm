@@ -1,0 +1,192 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function isAdmin() {
+      return signedIn() &&
+        (exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+          ? get(/databases/$(database)/documents/admins/$(request.auth.uid)).data.active == true
+          : request.auth.token.get('admin', false) == true);
+    }
+    function adminTimestamp() { return request.resource.data.updatedAt == request.time; }
+    function validAdminDriver() {
+      let d = request.resource.data;
+      return d.name is string && d.name.size() >= 2 && d.name.size() <= 120 &&
+        d.vehicleModel is string && d.vehicleModel.size() >= 2 && d.vehicleModel.size() <= 100 &&
+        d.vehicleColor is string && d.vehicleColor.size() <= 40 &&
+        d.origin is string && d.origin.size() >= 2 && d.origin.size() <= 150 &&
+        d.destination is string && d.destination.size() >= 2 && d.destination.size() <= 150 &&
+        d.vehicleType in ['car', 'motorcycle'] && d.serviceType in ['private', 'shared'] &&
+        d.priceCents is int && d.priceCents >= 0 && d.priceCents <= 1000000 &&
+        d.seatsTotal is int && d.seatsTotal >= 1 && d.seatsTotal <= 20 &&
+        d.seatsAvailable is int && d.seatsAvailable >= 0 && d.seatsAvailable <= d.seatsTotal &&
+        d.online is bool && (d.vehicleType != 'motorcycle' || (d.seatsTotal == 1 && d.serviceType == 'private'));
+    }
+    function validAdminTransition() {
+      let from = resource.data.status;
+      let to = request.resource.data.status;
+      return (from == 'confirmed' && to in ['accepted', 'cancelled']) ||
+        (from == 'accepted' && to in ['in_progress', 'cancelled']) ||
+        (from == 'in_progress' && to in ['completed', 'cancelled']);
+    }
+    function isOwner(uid) { return signedIn() && request.auth.uid == uid; }
+    function userData(uid) {
+      return get(/databases/$(database)/documents/users/$(uid)).data;
+    }
+    function approvedDriver() {
+      return signedIn() && userData(request.auth.uid).driverApproved == true;
+    }
+    function tripData(tripId) {
+      return get(/databases/$(database)/documents/trips/$(tripId)).data;
+    }
+    function belongsToTrip(tripId) {
+      return signedIn() &&
+        (tripData(tripId).passengerId == request.auth.uid ||
+         tripData(tripId).driverId == request.auth.uid);
+    }
+    function personalProfileFieldsOnly() {
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+        'fullName', 'phone', 'email', 'photoUrl', 'birthDate',
+        'profileComplete', 'updatedAt'
+      ]);
+    }
+    function validPassengerReservation(driverId) {
+      let tripId = request.resource.data.lastReservationId;
+      let newTrip = getAfter(/databases/$(database)/documents/trips/$(tripId)).data;
+      return signedIn() && resource.data.online == true &&
+        request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['seatsAvailable', 'lastReservationId']) &&
+        request.resource.data.seatsAvailable >= 0 &&
+        newTrip.passengerId == request.auth.uid &&
+        newTrip.driverId == driverId &&
+        newTrip.status == 'confirmed' &&
+        newTrip.seats > 0 &&
+        request.resource.data.seatsAvailable == resource.data.seatsAvailable - newTrip.seats;
+    }
+
+    match /users/{uid} {
+      allow read: if isAdmin();
+      allow update: if isAdmin() &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['driverApproved']) &&
+        request.resource.data.driverApproved == true &&
+        getAfter(/databases/$(database)/documents/driverApplications/$(uid)).data.status == 'approved';
+      allow create: if isOwner(uid) &&
+        !request.resource.data.keys().hasAny(['driverApproved', 'role']);
+      allow read: if isOwner(uid);
+      allow update: if isOwner(uid) && personalProfileFieldsOnly();
+      allow delete: if false;
+    }
+
+    match /driverApplications/{uid} {
+      allow read: if isAdmin();
+      allow update: if isAdmin() && resource.data.status == 'pending' && resource.data.userId == uid &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'reason', 'reviewedBy', 'updatedAt']) &&
+        request.resource.data.status in ['approved', 'rejected'] &&
+        request.resource.data.reason is string && request.resource.data.reason.size() <= 500 &&
+        (request.resource.data.status != 'rejected' || request.resource.data.reason.size() >= 5) &&
+        request.resource.data.reviewedBy == request.auth.uid && adminTimestamp() &&
+        (request.resource.data.status != 'approved' ||
+          getAfter(/databases/$(database)/documents/users/$(uid)).data.driverApproved == true);
+      allow create: if isOwner(uid) && request.resource.data.userId == uid &&
+        request.resource.data.status == 'pending';
+      allow read: if isOwner(uid);
+      allow update, delete: if false;
+    }
+
+    match /drivers/{driverId} {
+      allow create: if isAdmin() && request.resource.data.uid == driverId &&
+        getAfter(/databases/$(database)/documents/users/$(driverId)).data.driverApproved == true &&
+        getAfter(/databases/$(database)/documents/driverApplications/$(driverId)).data.status == 'approved' &&
+        request.resource.data.online == false && request.resource.data.seatsTotal == 1 &&
+        request.resource.data.seatsAvailable == 1 && request.resource.data.priceCents == 0;
+      allow update: if isAdmin() && validAdminDriver() && adminTimestamp() &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'name', 'vehicleModel', 'vehicleColor', 'vehicleType', 'serviceType', 'origin', 'destination',
+          'priceCents', 'seatsTotal', 'seatsAvailable', 'online', 'updatedAt'
+        ]) && (!request.resource.data.online || userData(driverId).driverApproved == true);
+      allow read: if signedIn();
+      allow create: if isOwner(driverId) && approvedDriver();
+      allow update: if (isOwner(driverId) && approvedDriver()) ||
+        validPassengerReservation(driverId);
+      allow delete: if isOwner(driverId);
+    }
+
+    match /routes/{routeId} {
+      allow read: if signedIn();
+      allow create: if approvedDriver() && request.resource.data.driverId == request.auth.uid;
+      allow update, delete: if signedIn() && resource.data.driverId == request.auth.uid;
+    }
+
+    match /trips/{tripId} {
+      allow read: if isAdmin();
+      allow update: if isAdmin() && validAdminTransition() && adminTimestamp() &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt']);
+      allow create: if signedIn() && request.resource.data.passengerId == request.auth.uid &&
+        request.resource.data.status == 'confirmed';
+      allow read: if signedIn() &&
+        (resource.data.passengerId == request.auth.uid || resource.data.driverId == request.auth.uid);
+      allow update: if signedIn() &&
+        (resource.data.passengerId == request.auth.uid || resource.data.driverId == request.auth.uid) &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt']) &&
+        request.resource.data.status in ['accepted', 'in_progress', 'completed', 'cancelled'];
+      allow delete: if false;
+    }
+
+    match /chats/{chatId} {
+      allow read: if isAdmin();
+      allow read: if signedIn() && request.auth.uid in resource.data.participantIds;
+      allow update: if signedIn() && request.auth.uid in resource.data.participantIds &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['lastMessage', 'updatedAt']);
+      allow create: if signedIn() && request.auth.uid in request.resource.data.participantIds;
+      match /messages/{messageId} {
+        allow read: if isAdmin();
+        allow read: if signedIn() && request.auth.uid in
+          get(/databases/$(database)/documents/chats/$(chatId)).data.participantIds;
+        allow create: if signedIn() && request.resource.data.senderId == request.auth.uid &&
+          request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participantIds;
+        allow update, delete: if false;
+      }
+    }
+
+    match /tripLocations/{tripId}/participants/{uid} {
+      allow read: if belongsToTrip(tripId);
+      allow create, update, delete: if isOwner(uid) && belongsToTrip(tripId);
+    }
+
+    match /admins/{uid} {
+      allow get: if isOwner(uid) || isAdmin();
+      allow list: if isAdmin();
+      allow create: if isAdmin() &&
+        request.resource.data.keys().hasAll(['name', 'email', 'active', 'createdBy', 'createdAt', 'updatedAt']) &&
+        request.resource.data.keys().hasOnly(['name', 'email', 'active', 'createdBy', 'createdAt', 'updatedAt']) &&
+        request.resource.data.name is string && request.resource.data.name.size() >= 2 && request.resource.data.name.size() <= 120 &&
+        request.resource.data.email is string && request.resource.data.email.size() > 3 && request.resource.data.email.size() <= 254 &&
+        request.resource.data.active is bool &&
+        (uid != request.auth.uid || request.resource.data.active == true) &&
+        request.resource.data.createdBy == request.auth.uid &&
+        request.resource.data.createdAt == request.time && adminTimestamp();
+      allow update: if isAdmin() &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'active', 'updatedAt']) &&
+        request.resource.data.name is string && request.resource.data.name.size() >= 2 && request.resource.data.name.size() <= 120 &&
+        request.resource.data.active is bool && adminTimestamp() &&
+        (uid != request.auth.uid || request.resource.data.active == true);
+      allow delete: if false;
+    }
+
+    match /adminAudit/{auditId} {
+      allow read: if isAdmin();
+      allow create: if isAdmin() &&
+        request.resource.data.keys().hasOnly(['adminId', 'action', 'target', 'detail', 'createdAt']) &&
+        request.resource.data.adminId == request.auth.uid &&
+        request.resource.data.action in ['application.review', 'driver.update', 'trip.status', 'admin.create', 'admin.update'] &&
+        request.resource.data.target is string && request.resource.data.detail is map &&
+        request.resource.data.createdAt == request.time;
+      allow update, delete: if false;
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
