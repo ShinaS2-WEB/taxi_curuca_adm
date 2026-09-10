@@ -31,18 +31,19 @@ service cloud.firestore {
       return d.name is string && d.name.size() >= 2 && d.name.size() <= 120 &&
         d.vehicleModel is string && d.vehicleModel.size() >= 2 && d.vehicleModel.size() <= 100 &&
         d.vehicleColor is string && d.vehicleColor.size() <= 40 &&
-        d.origin is string && d.origin.size() >= 2 && d.origin.size() <= 150 &&
-        d.destination is string && d.destination.size() >= 2 && d.destination.size() <= 150 &&
         d.vehicleType in ['car', 'motorcycle'] && d.serviceType in ['private', 'shared'] &&
-        d.priceCents is int && d.priceCents >= 0 && d.priceCents <= 1000000 &&
-        d.seatsTotal is int && d.seatsTotal >= 1 && d.seatsTotal <= 20 &&
-        d.seatsAvailable is int && d.seatsAvailable >= 0 && d.seatsAvailable <= d.seatsTotal &&
-        d.online is bool && (d.vehicleType != 'motorcycle' || (d.seatsTotal == 1 && d.serviceType == 'private'));
+        d.online is bool && (d.vehicleType != 'motorcycle' || d.serviceType == 'private') &&
+        (d.serviceType == 'private' || (
+          d.origin is string && d.origin.size() >= 2 && d.origin.size() <= 150 &&
+          d.destination is string && d.destination.size() >= 2 && d.destination.size() <= 150 &&
+          d.priceCents is int && d.priceCents >= 0 && d.priceCents <= 1000000 &&
+          d.seatsTotal is int && d.seatsTotal >= 1 && d.seatsTotal <= 20 &&
+          d.seatsAvailable is int && d.seatsAvailable >= 0 && d.seatsAvailable <= d.seatsTotal));
     }
     function validAdminTransition() {
       let from = resource.data.status;
       let to = request.resource.data.status;
-      return (from == 'confirmed' && to in ['accepted', 'cancelled']) ||
+      return (from in ['requested', 'confirmed'] && to in ['accepted', 'cancelled']) ||
         (from == 'accepted' && to in ['in_progress', 'cancelled']) ||
         (from == 'in_progress' && to in ['completed', 'cancelled']);
     }
@@ -59,11 +60,12 @@ service cloud.firestore {
         d.vehicleModel is string && d.vehicleModel.size() >= 2 &&
         d.vehicleColor is string && d.vehicleColor.size() > 0 &&
         d.vehicleType in ['car', 'motorcycle'] && d.serviceType in ['private', 'shared'] &&
-        d.seatsTotal is int && d.seatsTotal >= 1 && d.seatsTotal <= 20 &&
-        d.seatsAvailable is int && d.seatsAvailable > 0 && d.seatsAvailable <= d.seatsTotal &&
-        (d.vehicleType != 'motorcycle' || (d.seatsTotal == 1 && d.serviceType == 'private')) &&
+        (d.vehicleType != 'motorcycle' || d.serviceType == 'private') &&
         (d.serviceType != 'shared' ||
-          (d.origin is string && d.origin.size() > 0 && d.destination is string && d.destination.size() > 0 &&
+          (d.routeId is string && d.routeId.size() > 0 &&
+           d.seatsTotal is int && d.seatsTotal >= 1 && d.seatsTotal <= 20 &&
+           d.seatsAvailable is int && d.seatsAvailable > 0 && d.seatsAvailable <= d.seatsTotal &&
+           d.origin is string && d.origin.size() > 0 && d.destination is string && d.destination.size() > 0 &&
            d.priceCents is int && d.priceCents > 0 && d.priceCents <= 1000000 &&
            ((d.get('departureLabel', '') is string && d.get('departureLabel', '').size() > 0) ||
             (d.get('departure', '') is string && d.get('departure', '').size() > 0) ||
@@ -74,6 +76,31 @@ service cloud.firestore {
         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['online', 'updatedAt']) &&
         request.resource.data.updatedAt == request.time && request.resource.data.online is bool &&
         (request.resource.data.online == false || (approvedDriver() && validOnlineDriver()));
+    }
+    function ownSharedOffer(driverId) {
+      let d = request.resource.data;
+      return isOwner(driverId) && approvedDriver() && resource.data.serviceType == 'shared' &&
+        resource.data.online == false &&
+        resource.data.get('seatsAvailable', 0) == resource.data.get('seatsTotal', 0) &&
+        d.diff(resource.data).affectedKeys().hasOnly(['routeId', 'origin', 'destination', 'departureLabel', 'priceCents', 'seatsTotal', 'seatsAvailable', 'updatedAt']) &&
+        d.updatedAt == request.time && d.seatsAvailable == d.seatsTotal && validOnlineDriver();
+    }
+    function validPrivateRequest() {
+      let d = request.resource.data;
+      let driver = get(/databases/$(database)/documents/drivers/$(d.driverId)).data;
+      return d.status == 'requested' && d.serviceType == 'private' && d.createdAt == request.time &&
+        d.keys().hasOnly(['passengerId', 'driverId', 'serviceType', 'status', 'createdAt', 'passengerName', 'driverName', 'vehicleType', 'vehicleModel', 'vehicleColor']) &&
+        driver.online == true && driver.serviceType == 'private' && userData(d.driverId).driverApproved == true;
+    }
+    function validSharedReservation(tripId) {
+      let d = request.resource.data;
+      let driver = get(/databases/$(database)/documents/drivers/$(d.driverId)).data;
+      let afterDriver = getAfter(/databases/$(database)/documents/drivers/$(d.driverId)).data;
+      return d.status == 'confirmed' && d.serviceType == 'shared' && driver.serviceType == 'shared' &&
+        driver.online == true && d.routeId == driver.routeId &&
+        d.origin == driver.origin && d.destination == driver.destination && d.priceCents == driver.priceCents &&
+        d.seats is int && d.seats > 0 && d.seats <= driver.seatsAvailable &&
+        afterDriver.lastReservationId == tripId && afterDriver.seatsAvailable == driver.seatsAvailable - d.seats;
     }
     function tripData(tripId) {
       return get(/databases/$(database)/documents/trips/$(tripId)).data;
@@ -105,7 +132,7 @@ service cloud.firestore {
     function validPassengerReservation(driverId) {
       let tripId = request.resource.data.lastReservationId;
       let newTrip = getAfter(/databases/$(database)/documents/trips/$(tripId)).data;
-      return signedIn() && resource.data.online == true &&
+      return signedIn() && resource.data.online == true && resource.data.serviceType == 'shared' &&
         request.resource.data.diff(resource.data).affectedKeys()
           .hasOnly(['seatsAvailable', 'lastReservationId']) &&
         request.resource.data.seatsAvailable >= 0 &&
@@ -175,7 +202,7 @@ service cloud.firestore {
         ]) && (!request.resource.data.online || userData(driverId).driverApproved == true);
       allow read: if signedIn();
       // Driver records are created/edited by the administration, never by passengers.
-      allow update: if ownDriverAvailability(driverId) ||
+      allow update: if ownDriverAvailability(driverId) || ownSharedOffer(driverId) ||
         validPassengerReservation(driverId);
       allow delete: if false;
     }
@@ -191,14 +218,14 @@ service cloud.firestore {
       allow update: if isAdmin() && validAdminTransition() && adminTimestamp() &&
         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt']);
       allow create: if signedIn() && request.resource.data.passengerId == request.auth.uid &&
-        request.resource.data.status == 'confirmed';
+        (validPrivateRequest() || validSharedReservation(tripId));
       allow read: if signedIn() &&
         (resource.data.passengerId == request.auth.uid || (resource.data.driverId == request.auth.uid && approvedDriver()));
       allow update: if signedIn() &&
         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt']) &&
         request.resource.data.updatedAt == request.time &&
         ((resource.data.driverId == request.auth.uid && approvedDriver() && validAdminTransition()) ||
-         (resource.data.passengerId == request.auth.uid && resource.data.status in ['confirmed', 'accepted'] &&
+         (resource.data.passengerId == request.auth.uid && resource.data.status in ['requested', 'confirmed', 'accepted'] &&
           request.resource.data.status == 'cancelled'));
       allow delete: if false;
     }
