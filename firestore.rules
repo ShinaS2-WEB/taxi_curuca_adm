@@ -63,9 +63,22 @@ service cloud.firestore {
     }
     function personalProfileFieldsOnly() {
       return request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-        'fullName', 'phone', 'email', 'photoUrl', 'birthDate',
+        'fullName', 'phone', 'email', 'photoUrl', 'photoBase64', 'birthDate', 'city', 'emergencyContact',
         'profileComplete', 'updatedAt'
       ]);
+    }
+    // Shared by the Android app and admin panel; deploy the same file from both.
+    function validProfilePhoto() {
+      return !request.resource.data.keys().hasAny(['photoBase64']) ||
+        request.resource.data.photoBase64 == null ||
+        (request.resource.data.photoBase64 is string &&
+         request.resource.data.photoBase64.size() < 900000);
+    }
+    function personalProfileCreateOnly(uid) {
+      return request.resource.data.keys().hasOnly([
+        'uid', 'fullName', 'phone', 'email', 'photoUrl', 'photoBase64',
+        'birthDate', 'city', 'emergencyContact', 'profileComplete', 'updatedAt'
+      ]) && (!request.resource.data.keys().hasAny(['uid']) || request.resource.data.uid == uid);
     }
     function validPassengerReservation(driverId) {
       let tripId = request.resource.data.lastReservationId;
@@ -89,9 +102,9 @@ service cloud.firestore {
         request.resource.data.driverApproved == true &&
         getAfter(/databases/$(database)/documents/driverApplications/$(uid)).data.status == 'approved';
       allow create: if isOwner(uid) &&
-        !request.resource.data.keys().hasAny(['driverApproved', 'role']);
+        personalProfileCreateOnly(uid) && validProfilePhoto();
       allow read: if isOwner(uid);
-      allow update: if isOwner(uid) && personalProfileFieldsOnly();
+      allow update: if isOwner(uid) && personalProfileFieldsOnly() && validProfilePhoto();
       allow delete: if false;
     }
 
