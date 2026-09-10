@@ -51,7 +51,29 @@ service cloud.firestore {
       return get(/databases/$(database)/documents/users/$(uid)).data;
     }
     function approvedDriver() {
-      return signedIn() && userData(request.auth.uid).driverApproved == true;
+      return signedIn() && userData(request.auth.uid).get('driverApproved', false) == true;
+    }
+    function validOnlineDriver() {
+      let d = request.resource.data;
+      return d.name is string && d.name.size() >= 2 &&
+        d.vehicleModel is string && d.vehicleModel.size() >= 2 &&
+        d.vehicleColor is string && d.vehicleColor.size() > 0 &&
+        d.vehicleType in ['car', 'motorcycle'] && d.serviceType in ['private', 'shared'] &&
+        d.seatsTotal is int && d.seatsTotal >= 1 && d.seatsTotal <= 20 &&
+        d.seatsAvailable is int && d.seatsAvailable > 0 && d.seatsAvailable <= d.seatsTotal &&
+        (d.vehicleType != 'motorcycle' || (d.seatsTotal == 1 && d.serviceType == 'private')) &&
+        (d.serviceType != 'shared' ||
+          (d.origin is string && d.origin.size() > 0 && d.destination is string && d.destination.size() > 0 &&
+           d.priceCents is int && d.priceCents > 0 && d.priceCents <= 1000000 &&
+           ((d.get('departureLabel', '') is string && d.get('departureLabel', '').size() > 0) ||
+            (d.get('departure', '') is string && d.get('departure', '').size() > 0) ||
+            d.get('departureAt', null) is timestamp || d.get('departureAt', null) is int)));
+    }
+    function ownDriverAvailability(driverId) {
+      return isOwner(driverId) &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['online', 'updatedAt']) &&
+        request.resource.data.updatedAt == request.time && request.resource.data.online is bool &&
+        (request.resource.data.online == false || (approvedDriver() && validOnlineDriver()));
     }
     function tripData(tripId) {
       return get(/databases/$(database)/documents/trips/$(tripId)).data;
@@ -63,9 +85,22 @@ service cloud.firestore {
     }
     function personalProfileFieldsOnly() {
       return request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-        'fullName', 'phone', 'email', 'photoUrl', 'birthDate',
+        'fullName', 'phone', 'email', 'photoUrl', 'photoBase64', 'birthDate', 'city', 'emergencyContact',
         'profileComplete', 'updatedAt'
       ]);
+    }
+    // Shared by the Android app and admin panel; deploy the same file from both.
+    function validProfilePhoto() {
+      return !request.resource.data.keys().hasAny(['photoBase64']) ||
+        request.resource.data.photoBase64 == null ||
+        (request.resource.data.photoBase64 is string &&
+         request.resource.data.photoBase64.size() < 900000);
+    }
+    function personalProfileCreateOnly(uid) {
+      return request.resource.data.keys().hasOnly([
+        'uid', 'fullName', 'phone', 'email', 'photoUrl', 'photoBase64',
+        'birthDate', 'city', 'emergencyContact', 'profileComplete', 'updatedAt'
+      ]) && (!request.resource.data.keys().hasAny(['uid']) || request.resource.data.uid == uid);
     }
     function validPassengerReservation(driverId) {
       let tripId = request.resource.data.lastReservationId;
@@ -89,9 +124,9 @@ service cloud.firestore {
         request.resource.data.driverApproved == true &&
         getAfter(/databases/$(database)/documents/driverApplications/$(uid)).data.status == 'approved';
       allow create: if isOwner(uid) &&
-        !request.resource.data.keys().hasAny(['driverApproved', 'role']);
+        personalProfileCreateOnly(uid) && validProfilePhoto();
       allow read: if isOwner(uid);
-      allow update: if isOwner(uid) && personalProfileFieldsOnly();
+      allow update: if isOwner(uid) && personalProfileFieldsOnly() && validProfilePhoto();
       allow delete: if false;
     }
 
@@ -139,10 +174,10 @@ service cloud.firestore {
           'priceCents', 'seatsTotal', 'seatsAvailable', 'online', 'updatedAt'
         ]) && (!request.resource.data.online || userData(driverId).driverApproved == true);
       allow read: if signedIn();
-      allow create: if isOwner(driverId) && approvedDriver();
-      allow update: if (isOwner(driverId) && approvedDriver()) ||
+      // Driver records are created/edited by the administration, never by passengers.
+      allow update: if ownDriverAvailability(driverId) ||
         validPassengerReservation(driverId);
-      allow delete: if isOwner(driverId);
+      allow delete: if false;
     }
 
     match /routes/{routeId} {
@@ -158,11 +193,13 @@ service cloud.firestore {
       allow create: if signedIn() && request.resource.data.passengerId == request.auth.uid &&
         request.resource.data.status == 'confirmed';
       allow read: if signedIn() &&
-        (resource.data.passengerId == request.auth.uid || resource.data.driverId == request.auth.uid);
+        (resource.data.passengerId == request.auth.uid || (resource.data.driverId == request.auth.uid && approvedDriver()));
       allow update: if signedIn() &&
-        (resource.data.passengerId == request.auth.uid || resource.data.driverId == request.auth.uid) &&
         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt']) &&
-        request.resource.data.status in ['accepted', 'in_progress', 'completed', 'cancelled'];
+        request.resource.data.updatedAt == request.time &&
+        ((resource.data.driverId == request.auth.uid && approvedDriver() && validAdminTransition()) ||
+         (resource.data.passengerId == request.auth.uid && resource.data.status in ['confirmed', 'accepted'] &&
+          request.resource.data.status == 'cancelled'));
       allow delete: if false;
     }
 
