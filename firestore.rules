@@ -185,7 +185,8 @@ service cloud.firestore {
         request.resource.data.uid == driverId && request.resource.data.online == false &&
         request.resource.data.vehicleModel is string && request.resource.data.vehicleModel.size() >= 2 && request.resource.data.vehicleModel.size() <= 100 &&
         request.resource.data.vehicleType in ['car', 'motorcycle'] &&
-        request.resource.data.seatsTotal == 1 && request.resource.data.seatsAvailable == 1 && request.resource.data.priceCents == 0;
+        (request.resource.data.get('serviceType', 'private') == 'private' ||
+         (request.resource.data.seatsTotal == 1 && request.resource.data.seatsAvailable == 1 && request.resource.data.priceCents == 0));
       allow update: if isAdmin() && managedProfile(driverId) && adminTimestamp() &&
         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'online', 'updatedAt']) &&
         request.resource.data.name == getAfter(/databases/$(database)/documents/users/$(driverId)).data.fullName &&
@@ -193,8 +194,9 @@ service cloud.firestore {
       allow create: if isAdmin() && request.resource.data.uid == driverId &&
         getAfter(/databases/$(database)/documents/users/$(driverId)).data.driverApproved == true &&
         getAfter(/databases/$(database)/documents/driverApplications/$(driverId)).data.status == 'approved' &&
-        request.resource.data.online == false && request.resource.data.seatsTotal == 1 &&
-        request.resource.data.seatsAvailable == 1 && request.resource.data.priceCents == 0;
+        request.resource.data.online == false &&
+        (request.resource.data.get('serviceType', 'private') == 'private' ||
+         (request.resource.data.seatsTotal == 1 && request.resource.data.seatsAvailable == 1 && request.resource.data.priceCents == 0));
       allow update: if isAdmin() && validAdminDriver() && adminTimestamp() &&
         request.resource.data.diff(resource.data).affectedKeys().hasOnly([
           'name', 'vehicleModel', 'vehicleColor', 'vehicleType', 'serviceType', 'origin', 'destination',
