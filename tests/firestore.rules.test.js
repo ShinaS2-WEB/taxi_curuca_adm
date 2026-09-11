@@ -1,10 +1,11 @@
+// Regression suite from th23dev/taxi_curuca_adm; preserves existing admin restrictions.
 import { before, beforeEach, after, test } from 'node:test';
 import { readFile } from 'node:fs/promises';
 import { initializeTestEnvironment, assertFails, assertSucceeds } from '@firebase/rules-unit-testing';
 import { collection, doc, getDocs, getDoc, setDoc, updateDoc, deleteDoc, writeBatch, serverTimestamp } from 'firebase/firestore';
 
 let env;
-const driver = { uid: 'd1', name: 'Maria Costa', vehicleModel: 'Spin', vehicleColor: 'Prata', vehicleType: 'car', serviceType: 'shared', origin: 'Centro', destination: 'Terminal', priceCents: 1200, seatsTotal: 6, seatsAvailable: 3, online: true };
+const driver = { uid: 'd1', routeId: 'route1', name: 'Maria Costa', vehicleModel: 'Spin', vehicleColor: 'Prata', vehicleType: 'car', serviceType: 'shared', origin: 'Centro', destination: 'Terminal', priceCents: 1200, seatsTotal: 6, seatsAvailable: 3, online: true };
 before(async () => { env = await initializeTestEnvironment({ projectId: 'demo-taxi-curuca', firestore: { host: '127.0.0.1', port: 8080, rules: await readFile('firestore.rules', 'utf8') } }); });
 after(async () => { await env?.cleanup(); });
 beforeEach(async () => {
@@ -16,13 +17,13 @@ beforeEach(async () => {
       setDoc(doc(db, 'users/d1'), { fullName: 'Maria Costa', driverApproved: true }),
       setDoc(doc(db, 'driverApplications/p1'), { userId: 'p1', status: 'pending', vehicleModel: 'Spin', vehicleType: 'car' }),
       setDoc(doc(db, 'drivers/d1'), driver),
-      setDoc(doc(db, 'trips/t1'), { passengerId: 'p1', driverId: 'd1', status: 'confirmed', seats: 1 }),
+      setDoc(doc(db, 'trips/t1'), { passengerId: 'p1', driverId: 'd1', status: 'confirmed', seats: 1, serviceType: 'shared', routeId: 'route1' }),
       setDoc(doc(db, 'chats/c1'), { participantIds: ['p1', 'd1'], tripId: 't1' }),
-      setDoc(doc(db, 'chats/c1/messages/m1'), { senderId: 'p1', text: 'Olá' }),
+      setDoc(doc(db, 'chats/c1/messages/m1'), { senderId: 'p1', text: 'OlÃ¡' }),
     ]);
   });
 });
-test('anônimo e passageiro não podem consultar os dados administrativos nem se promover', async () => {
+test('anÃ´nimo e passageiro nÃ£o podem consultar os dados administrativos nem se promover', async () => {
   const anonymous = env.unauthenticatedContext().firestore();
   const passenger = env.authenticatedContext('p1').firestore();
   await assertFails(getDocs(collection(anonymous, 'users')));
@@ -32,7 +33,7 @@ test('anônimo e passageiro não podem consultar os dados administrativos nem se
   await assertFails(getDoc(doc(passenger, 'users/d1')));
 });
 
-test('somente admin altera tipo; conversão para passageiro exige motorista offline', async () => {
+test('somente admin altera tipo; conversÃ£o para passageiro exige motorista offline', async () => {
   const admin = env.authenticatedContext('admin', { admin: true }).firestore();
   const passenger = env.authenticatedContext('p1').firestore();
   const owner = env.authenticatedContext('d1').firestore();
@@ -48,14 +49,14 @@ test('somente admin altera tipo; conversão para passageiro exige motorista offl
   await assertFails(updateDoc(doc(owner, 'users/d1'), { driverApproved: true }));
   await assertFails(updateDoc(doc(owner, 'drivers/d1'), { online: true }));
 });
-test('administrador consulta cadastros e mensagens, sem exclusão ou escrita de chat', async () => {
+test('administrador consulta cadastros e mensagens, sem exclusÃ£o ou escrita de chat', async () => {
   const db = env.authenticatedContext('admin', { admin: true }).firestore();
   for (const name of ['users', 'drivers', 'driverApplications', 'trips', 'chats']) await assertSucceeds(getDocs(collection(db, name)));
   await assertSucceeds(getDocs(collection(db, 'chats/c1/messages')));
   await assertFails(deleteDoc(doc(db, 'users/p1')));
   await assertFails(setDoc(doc(db, 'chats/c1/messages/new'), { senderId: 'admin', text: 'indevido' }));
 });
-test('aprovação exige atualização atômica do perfil e permite criação do motorista', async () => {
+test('aprovaÃ§Ã£o exige atualizaÃ§Ã£o atÃ´mica do perfil e permite criaÃ§Ã£o do motorista', async () => {
   const db = env.authenticatedContext('admin', { admin: true }).firestore();
   const review = { status: 'approved', reason: '', reviewedBy: 'admin', updatedAt: serverTimestamp() };
   await assertFails(updateDoc(doc(db, 'driverApplications/p1'), review));
@@ -66,10 +67,19 @@ test('aprovação exige atualização atômica do perfil e permite criação do 
   batch.set(doc(db, 'drivers/p1'), { ...driver, uid: 'p1', online: false, seatsTotal: 1, seatsAvailable: 1, priceCents: 0 });
   batch.set(doc(db, 'adminAudit/review'), { adminId: 'admin', action: 'application.review', target: 'p1', detail: { status: 'approved' }, createdAt: serverTimestamp() });
   await assertSucceeds(batch.commit());
-  await assertFails(updateDoc(doc(db, 'driverApplications/p1'), { ...review, status: 'rejected', reason: 'Correção' }));
+  await assertFails(updateDoc(doc(db, 'driverApplications/p1'), { ...review, status: 'rejected', reason: 'CorreÃ§Ã£o' }));
   await assertFails(deleteDoc(doc(db, 'adminAudit/review')));
 });
-test('regras validam vagas, recusa e transições mesmo fora da interface', async () => {
+test('admin aprova particular sem inventario financeiro ou rota', async () => {
+  const db = env.authenticatedContext('admin', { admin: true }).firestore();
+  const batch = writeBatch(db);
+  batch.update(doc(db, 'driverApplications/p1'), { status: 'approved', reason: '', reviewedBy: 'admin', updatedAt: serverTimestamp() });
+  batch.update(doc(db, 'users/p1'), { driverApproved: true });
+  batch.set(doc(db, 'drivers/p1'), { uid: 'p1', online: false, serviceType: 'private', vehicleType: 'car', vehicleModel: 'Spin', vehicleColor: 'Prata', name: 'Passageiro' });
+  await assertSucceeds(batch.commit());
+});
+
+test('regras validam vagas, recusa e transiÃ§Ãµes mesmo fora da interface', async () => {
   const db = env.authenticatedContext('admin', { admin: true }).firestore();
   await assertFails(updateDoc(doc(db, 'drivers/d1'), { seatsAvailable: 7, updatedAt: serverTimestamp() }));
   await assertSucceeds(updateDoc(doc(db, 'drivers/d1'), { seatsAvailable: 2, updatedAt: serverTimestamp() }));
@@ -79,13 +89,13 @@ test('regras validam vagas, recusa e transições mesmo fora da interface', asyn
   await assertSucceeds(updateDoc(doc(db, 'trips/t1'), { status: 'accepted', updatedAt: serverTimestamp() }));
   await assertFails(updateDoc(doc(db, 'trips/t1'), { passengerId: 'admin' }));
 });
-test('fluxos existentes do aplicativo: perfil próprio, reserva e mensagens dos participantes', async () => {
+test('fluxos existentes do aplicativo: perfil prÃ³prio, reserva e mensagens dos participantes', async () => {
   const db = env.authenticatedContext('p1').firestore();
   await assertSucceeds(updateDoc(doc(db, 'users/p1'), { fullName: 'Nome atualizado' }));
   await assertSucceeds(getDoc(doc(db, 'trips/t1')));
   await assertSucceeds(getDocs(collection(db, 'chats/c1/messages')));
   const batch = writeBatch(db);
-  batch.set(doc(db, 'trips/t2'), { passengerId: 'p1', driverId: 'd1', status: 'confirmed', seats: 1 });
+  batch.set(doc(db, 'trips/t2'), { passengerId: 'p1', driverId: 'd1', status: 'confirmed', seats: 1, serviceType: 'shared', routeId: driver.routeId, origin: driver.origin, destination: driver.destination, priceCents: driver.priceCents });
   batch.update(doc(db, 'drivers/d1'), { seatsAvailable: 2, lastReservationId: 't2' });
   await assertSucceeds(batch.commit());
   await assertSucceeds(setDoc(doc(db, 'chats/c1/messages/m2'), { senderId: 'p1', text: 'Estou chegando' }));

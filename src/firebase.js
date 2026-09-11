@@ -144,8 +144,34 @@ export async function changeTripStatus(id, status) {
     const ref = doc(db, 'trips', id);
     const snap = await tx.get(ref);
     if (!snap.exists()) throw new Error('Viagem não encontrada.');
-    checkTransition(snap.data().status, status);
-    tx.update(ref, { status, updatedAt: serverTimestamp() });
+    const trip = snap.data();
+    if (trip.status === 'cancelled' && status === 'cancelled') return;
+    checkTransition(trip.status, status);
+    const driverRef = doc(db, 'drivers', trip.driverId);
+    const driverSnap = await tx.get(driverRef);
+    if (!driverSnap.exists()) throw new Error('Cadastro do motorista não encontrado.');
+    const driver = driverSnap.data();
+    const changes = { status, updatedAt: serverTimestamp() };
+    if (status === 'cancelled') changes.cancelledBy = user.uid;
+    if (trip.serviceType === 'shared') {
+      if (driver.routeId !== trip.routeId) throw new Error('A oferta mudou; confira a viagem antes de prosseguir.');
+      if (status === 'cancelled') {
+        if (driver.departureStarted) throw new Error('Não é possível cancelar após a saída.');
+        const restored = driver.seatsAvailable + trip.seats;
+        if (!(trip.seats > 0 && restored <= driver.seatsTotal)) throw new Error('Inventário de vagas inconsistente.');
+        tx.update(driverRef, { seatsAvailable: restored, lastCancellationId: id });
+        changes.seatsRefunded = true;
+      } else if (status === 'in_progress') {
+        tx.update(driverRef, { departureStarted: true, departureTripId: id, updatedAt: serverTimestamp() });
+      }
+    } else if (status === 'accepted') {
+      if (!driver.online || driver.activeTripId) throw new Error('Motorista offline ou ocupado.');
+      tx.update(driverRef, { activeTripId: id, updatedAt: serverTimestamp() });
+    } else if (['accepted', 'in_progress'].includes(trip.status)) {
+      if (driver.activeTripId !== id) throw new Error('A corrida ativa não corresponde. Confira o cadastro.');
+      if (['completed', 'cancelled'].includes(status)) tx.update(driverRef, { activeTripId: '', updatedAt: serverTimestamp() });
+    }
+    tx.update(ref, changes);
     audit(tx, user, 'trip.status', id, { from: snap.data().status, status });
   });
 }

@@ -12,7 +12,7 @@ export function seedData() {
 export const money = cents => (Number(cents || 0)/100).toLocaleString('pt-BR', { style:'currency', currency:'BRL' });
 export const dateValue = v => v == null ? null : typeof v.toDate === 'function' ? v.toDate() : new Date(v._seconds != null ? v._seconds*1000 : v.seconds != null ? v.seconds*1000 : v);
 export const dateLabel = v => { const d = dateValue(v); return d && !isNaN(d) ? d.toLocaleString('pt-BR', { day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit' }) : 'Não informado'; };
-export const statusLabels = { pending:'Em análise', approved:'Aprovado', rejected:'Recusado', confirmed:'Confirmada', accepted:'Aceita', in_progress:'Em andamento', completed:'Concluída', cancelled:'Cancelada' };
-export const nextStatuses = { confirmed:['accepted','cancelled'], accepted:['in_progress','cancelled'], in_progress:['completed','cancelled'], completed:[], cancelled:[] };
+export const statusLabels = { pending:'Em análise', approved:'Aprovado', rejected:'Recusado', requested:'Nova solicitação', confirmed:'Confirmada', accepted:'Aceita', in_progress:'Em andamento', completed:'Concluída', cancelled:'Cancelada' };
+export const nextStatuses = { requested:['accepted','cancelled'], confirmed:['accepted','cancelled'], accepted:['in_progress','cancelled'], in_progress:['completed'], completed:[], cancelled:[] };
 export function loadDemo() { try { const saved = JSON.parse(localStorage.getItem('taxi-curuca-demo-v1')); if (saved && ['users','drivers','trips','driverApplications','chats'].every(k => Array.isArray(saved[k]))) return saved; } catch { /* Start a fresh demo if the local data is invalid. */ } return seedData(); }
 export function persistDemo(data) { localStorage.setItem('taxi-curuca-demo-v1', JSON.stringify(data)); }

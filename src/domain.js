@@ -1,4 +1,4 @@
-export const transitions = { confirmed: ['accepted', 'cancelled'], accepted: ['in_progress', 'cancelled'], in_progress: ['completed', 'cancelled'], completed: [], cancelled: [] };
+export const transitions = { requested: ['accepted', 'cancelled'], confirmed: ['accepted', 'cancelled'], accepted: ['in_progress', 'cancelled'], in_progress: ['completed'], completed: [], cancelled: [] };
 export function checkTransition(from, to) {
   if (!transitions[from]?.includes(to)) throw new Error('Esta mudança de status não é permitida. Atualize os dados.');
 }
